@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentWorkspaceId } from "@/lib/auth";
 import { prisma } from "@/lib/db/client";
+import { getQueueBackend } from "@/lib/queue/backend";
 import { getDMQueue } from "@/lib/queue/client";
 import { getWorkerAlerts, getWorkerHealth } from "@/lib/ops/worker-health";
 
@@ -15,6 +16,7 @@ export async function GET() {
     );
   }
 
+  const backend = getQueueBackend();
   const [
     queueCounts,
     workerHealth,
@@ -24,8 +26,17 @@ export async function GET() {
     tokenRefreshFailures,
     operationalEvents,
   ] = await Promise.all([
-    getDMQueue().getJobCounts("waiting", "active", "delayed", "failed"),
-    getWorkerHealth(),
+    backend === "qstash"
+      ? Promise.resolve({ waiting: 0, active: 0, delayed: 0, failed: 0 })
+      : getDMQueue().getJobCounts("waiting", "active", "delayed", "failed"),
+    backend === "qstash"
+      ? Promise.resolve({
+          healthy: true,
+          heartbeat: null,
+          ageMs: null,
+          mode: "qstash" as const,
+        })
+      : getWorkerHealth().then((health) => ({ ...health, mode: "bullmq" as const })),
     getWorkerAlerts(10),
     prisma.webhookEvent.findMany({
       where: { workspaceId, status: "FAILED" },
@@ -94,6 +105,7 @@ export async function GET() {
   return NextResponse.json({
     success: true,
     data: {
+      queueBackend: backend,
       queueCounts,
       workerHealth,
       workerAlerts,

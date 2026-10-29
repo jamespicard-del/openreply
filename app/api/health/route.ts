@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
+import { getQueueBackend } from "@/lib/queue/backend";
 import { getDMQueue, getRedisConnection } from "@/lib/queue/client";
+import { missingQStashEnv } from "@/lib/queue/qstash";
 import { getWorkerHealth } from "@/lib/ops/worker-health";
 
 export const runtime = "nodejs";
@@ -81,6 +83,37 @@ async function checkQueue(): Promise<HealthCheck & { counts?: unknown }> {
 }
 
 export async function GET() {
+  if (getQueueBackend() === "qstash") {
+    const database = await checkDatabase();
+    const missing = missingQStashEnv();
+    const qstash =
+      missing.length === 0
+        ? { status: "ok" as const }
+        : { status: "error" as const, detail: `Missing ${missing.join(", ")}` };
+    // Uptime checks must not ping Redis or read a worker heartbeat. Both made
+    // /api/health part of the always-on command burn. Delivery health is the
+    // database plus the QStash credentials this process will sign with.
+    const healthy = database.status === "ok" && qstash.status === "ok";
+    return NextResponse.json(
+      {
+        status: healthy ? "ok" : "degraded",
+        checks: {
+          database,
+          redis: { status: "ok", detail: "not probed" },
+          queue: { status: "ok", detail: "qstash" },
+          worker: {
+            healthy,
+            heartbeat: null,
+            ageMs: null,
+            mode: "qstash",
+          },
+          qstash,
+        },
+      },
+      { status: healthy ? 200 : 503 }
+    );
+  }
+
   const [database, redis, queue, worker] = await Promise.all([
     checkDatabase(),
     checkRedis(),

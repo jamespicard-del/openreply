@@ -244,6 +244,7 @@
   "Private replies successfully sent.": "Respostas privadas enviadas com sucesso.",
   "Production Diagnostics": "Diagnóstico de produção",
   "Public reply under the post": "Resposta pública na publicação",
+  "QStash, no always-on worker": "QStash, sem worker sempre ligado",
   "Queue": "Fila",
   "Range": "Período",
   "Rate limited": "Limite de envio atingido",
