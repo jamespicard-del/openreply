@@ -2,6 +2,9 @@ import { getRedisConnection } from "@/lib/queue/client";
 
 const WORKER_HEALTH_KEY = "health:worker:dm";
 const WORKER_ALERTS_KEY = "alerts:worker:dm";
+// 2× the 60s heartbeat in worker/dm-worker.ts. getWorkerHealth() and therefore
+// /api/health treat the worker as healthy for this same window. One missed beat
+// lands on the expiry boundary; a beat that lands on time stays under it.
 const WORKER_HEARTBEAT_TTL_SECONDS = 120;
 
 export interface WorkerHeartbeat {
