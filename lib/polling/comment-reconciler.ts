@@ -16,9 +16,11 @@
  * handled comments. Each sweep is capped so it can never flood the comment API
  * (which Instagram rate-limits aggressively, error 368).
  *
- * It runs on an interval in the worker process because Vercel's free crons only
- * fire once a day. Matching and sending reuse the worker's processComment, so
- * rate limiting and logging behave exactly as for webhook-delivered comments.
+ * With QUEUE_BACKEND=bullmq it runs on an interval in the worker process,
+ * because Vercel's free crons only fire once a day. With QUEUE_BACKEND=qstash
+ * the same sweep is invoked from /api/cron/reconcile-comments on a QStash
+ * schedule. Matching and sending reuse the worker's processComment, so rate
+ * limiting and logging behave exactly as for webhook-delivered comments.
  *
  * Known limitation, handled not fixed: comments removed by Instagram's Hidden
  * Words / spam filter may not be returned by the Graph API at all. Disable that
@@ -28,7 +30,7 @@
 import { MAX_COMMENT_SEND_ATTEMPTS } from "@/lib/queue/comment-delivery";
 import { hasLegacyUnconfirmedDelivery } from "@/lib/instagram/delivery-errors";
 import { prisma } from "@/lib/db/client";
-import { getDMQueue } from "@/lib/queue/client";
+import { enqueueDmJob } from "@/lib/queue/enqueue";
 import {
   getRecentMediaComments,
   getUserMedia,
@@ -189,8 +191,6 @@ async function sweepCampaign({
   }
   if (mediaIds.length === 0) return stat;
 
-  const queue = getDMQueue();
-
   for (const mediaId of mediaIds) {
     let comments: InstagramComment[];
     try {
@@ -269,7 +269,7 @@ async function sweepCampaign({
       // drop this add, so the comment would never be retried. Dedup is handled
       // above and by the worker's atomic, durable per-leg claims. Send attempts
       // are counted in DmLog across jobs, so a sweep cannot reset the budget.
-      await queue.add("process-comment", {
+      await enqueueDmJob("process-comment", {
         instagramAccountId: account.instagramId,
         accountConnectionId: account.id,
         commentId: c.id,

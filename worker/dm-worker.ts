@@ -1,62 +1,73 @@
+import { getQueueBackend } from "@/lib/queue/backend";
 import { createDMWorker } from "@/lib/queue/dm-worker";
 import { recordWorkerHeartbeat } from "@/lib/ops/worker-health";
 import { reconcileComments } from "@/lib/polling/comment-reconciler";
 import { attachPendingNextReels } from "@/lib/automation/attach-next-reel";
 import os from "node:os";
 
-const worker = createDMWorker();
-const startedAt = new Date().toISOString();
-// Must stay below WORKER_HEARTBEAT_TTL_SECONDS (180) in lib/ops/worker-health.ts.
-// That window is what /api/health reads, so one missed 60s beat stays healthy.
-const HEARTBEAT_INTERVAL_MS = 60_000;
-// Polling safety net for comments that webhooks miss. Runs in the worker because
-// it must fire every few minutes and Vercel's free crons only run once a day.
-const POLL_INTERVAL_MS = Number(
-  process.env.COMMENT_POLL_INTERVAL_MS ?? 5 * 60_000
-);
+if (getQueueBackend() === "qstash") {
+  // Do not open a BullMQ consumer. That connection is what polls Redis while
+  // idle. Comment sweeps run from /api/cron/reconcile-comments. Leave the
+  // process up so pm2 does not restart-loop, and stop it once cutover is done.
+  console.log(
+    "[DM Worker] QUEUE_BACKEND=qstash; BullMQ consumer, heartbeat, and reconciler interval are not started."
+  );
+  setInterval(() => {}, 86_400_000);
+} else {
+  const worker = createDMWorker();
+  const startedAt = new Date().toISOString();
+  // Must stay below WORKER_HEARTBEAT_TTL_SECONDS (180) in lib/ops/worker-health.ts.
+  // That window is what /api/health reads, so one missed 60s beat stays healthy.
+  const HEARTBEAT_INTERVAL_MS = 60_000;
+  // Polling safety net for comments that webhooks miss. Runs in the worker because
+  // it must fire every few minutes and Vercel's free crons only run once a day.
+  const POLL_INTERVAL_MS = Number(
+    process.env.COMMENT_POLL_INTERVAL_MS ?? 5 * 60_000
+  );
 
-console.log("[DM Worker] Started");
+  console.log("[DM Worker] Started");
 
-async function heartbeat() {
-  try {
-    await recordWorkerHeartbeat({
-      pid: process.pid,
-      hostname: os.hostname(),
-      startedAt,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown error";
-    console.error("[DM Worker] Heartbeat failed:", message);
-  }
-}
-
-void heartbeat();
-const heartbeatTimer = setInterval(() => void heartbeat(), HEARTBEAT_INTERVAL_MS);
-
-async function poll() {
-  try {
-    const attached = await attachPendingNextReels();
-    if (attached.bound > 0 || attached.failedAccounts > 0) {
-      console.log("[DM Worker] Next-reel attachment:", attached);
+  async function heartbeat() {
+    try {
+      await recordWorkerHeartbeat({
+        pid: process.pid,
+        hostname: os.hostname(),
+        startedAt,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      console.error("[DM Worker] Heartbeat failed:", message);
     }
-    await reconcileComments();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown error";
-    console.error("[DM Worker] Comment reconciliation failed:", message);
   }
+
+  void heartbeat();
+  const heartbeatTimer = setInterval(() => void heartbeat(), HEARTBEAT_INTERVAL_MS);
+
+  async function poll() {
+    try {
+      const attached = await attachPendingNextReels();
+      if (attached.bound > 0 || attached.failedAccounts > 0) {
+        console.log("[DM Worker] Next-reel attachment:", attached);
+      }
+      await reconcileComments();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      console.error("[DM Worker] Comment reconciliation failed:", message);
+    }
+  }
+
+  // Kick off one sweep shortly after boot, then on a fixed interval.
+  setTimeout(() => void poll(), 10_000);
+  const pollTimer = setInterval(() => void poll(), POLL_INTERVAL_MS);
+
+  async function shutdown(signal: string) {
+    console.log(`[DM Worker] ${signal} received, closing worker`);
+    clearInterval(heartbeatTimer);
+    clearInterval(pollTimer);
+    await worker.close();
+    process.exit(0);
+  }
+
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
 }
-
-// Kick off one sweep shortly after boot, then on a fixed interval.
-setTimeout(() => void poll(), 10_000);
-const pollTimer = setInterval(() => void poll(), POLL_INTERVAL_MS);
-
-async function shutdown(signal: string) {
-  console.log(`[DM Worker] ${signal} received, closing worker`);
-  clearInterval(heartbeatTimer);
-  clearInterval(pollTimer);
-  await worker.close();
-  process.exit(0);
-}
-
-process.on("SIGINT", () => void shutdown("SIGINT"));
-process.on("SIGTERM", () => void shutdown("SIGTERM"));

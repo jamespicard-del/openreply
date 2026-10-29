@@ -5,10 +5,12 @@ import { useEffect, useState } from "react";
 import StatusBadge from "@/components/status-badge";
 
 interface DiagnosticsData {
+  queueBackend?: "bullmq" | "qstash";
   queueCounts: Record<string, number>;
   workerHealth: {
     healthy: boolean;
     ageMs: number | null;
+    mode?: "bullmq" | "qstash";
     heartbeat: {
       checkedAt: string;
       hostname?: string;
@@ -153,12 +155,26 @@ export default function DiagnosticsPage() {
             {data?.workerHealth.healthy ? t("Healthy") : t("Needs attention")}
           </p>
           <p className="mt-2 text-xs text-muted">
-            {workerAgeSeconds == null
-              ? t("No heartbeat found")
-              : t("Last heartbeat {seconds}s ago", { seconds: workerAgeSeconds })}
+            {data?.queueBackend === "qstash"
+              ? t("QStash, no always-on worker")
+              : workerAgeSeconds == null
+                ? t("No heartbeat found")
+                : t("Last heartbeat {seconds}s ago", { seconds: workerAgeSeconds })}
           </p>
         </div>
-        {["waiting", "active", "delayed", "failed"].map((key) => (
+        {data?.queueBackend === "qstash" ? (
+          <div className="panel rounded p-4 sm:p-5">
+            <p className="text-xs font-semibold uppercase text-muted">
+              {t("Queue")}
+            </p>
+            <p className="mt-3 text-sm text-foreground">
+              {t("QStash, no always-on worker")}
+            </p>
+          </div>
+        ) : null}
+        {data?.queueBackend === "qstash"
+          ? null
+          : ["waiting", "active", "delayed", "failed"].map((key) => (
           <div key={key} className="panel rounded p-4 sm:p-5">
             <p className="text-xs font-semibold uppercase text-muted">
               {t("Queue")} {label(key)}

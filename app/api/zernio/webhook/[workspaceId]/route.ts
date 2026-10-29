@@ -3,7 +3,10 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db/client';
 import { decryptToken } from '@/lib/meta/oauth';
 import { normalizeZernioEvent, verifyZernioSignature } from '@/lib/zernio/normalize-event';
+import { getQueueBackend } from '@/lib/queue/backend';
+import { zernioDedupeKey } from '@/lib/queue/idempotency';
 import { processInstagramWebhook } from '@/lib/queue/process-webhook';
+import { logQStashError, publishIngestJob } from '@/lib/queue/qstash';
 
 const eventEnvelopeSchema = z.object({ account: z.object({ id: z.string().min(1), platform: z.literal('instagram') }) });
 
@@ -24,6 +27,20 @@ export async function POST(request: Request, segmentData: { params: Promise<{ wo
   if (!account) return NextResponse.json({ success: true, ignored: true });
   const normalized = normalizeZernioEvent({ payload, account });
   if (!normalized) return NextResponse.json({ success: true, ignored: true });
+  if (getQueueBackend() === 'qstash') {
+    try {
+      await publishIngestJob({
+        provider: 'ZERNIO',
+        workspaceId,
+        payload: normalized,
+        dedupeKey: zernioDedupeKey(workspaceId, payload),
+      });
+      return NextResponse.json({ success: true });
+    } catch (error) {
+      console.error('[zernio] failed to publish:', logQStashError(error));
+      return NextResponse.json({ error: 'Webhook processing failed; retry delivery.' }, { status: 500 });
+    }
+  }
   try {
     await processInstagramWebhook({ payload: normalized, provider: 'ZERNIO', workspaceId });
     return NextResponse.json({ success: true });

@@ -1,14 +1,36 @@
 import { prisma } from '@/lib/db/client';
-import { getDMQueue, MESSAGE_JOB_NAME, POSTBACK_JOB_NAME } from '@/lib/queue/client';
+import { MESSAGE_JOB_NAME, POSTBACK_JOB_NAME, type DmQueueJob } from '@/lib/queue/client';
+import { enqueueDmJob } from '@/lib/queue/enqueue';
 import { parseCommentEvents, parseMessageEvents, parsePostbackEvents, parseReadEvents } from '@/lib/meta/webhook';
 import { Prisma, type InstagramProvider } from '@/app/generated/prisma/client';
+
+type JobOptions = { jobId?: string; delay?: number };
+
+export type InlineDmJob = {
+  name: string;
+  data: DmQueueJob;
+  jobId?: string;
+};
+
+async function handoff(
+  name: string,
+  data: DmQueueJob,
+  options: JobOptions | undefined,
+  runInline?: (job: InlineDmJob) => Promise<void>,
+) {
+  if (runInline && !(options?.delay && options.delay > 0)) {
+    await runInline({ name, data, jobId: options?.jobId });
+    return;
+  }
+  await enqueueDmJob(name, data, options);
+}
 
 const OPENING_DM_READ_FALLBACK_DELAY_MS = 5 * 60 * 1000;
 type InstagramPayload = Parameters<typeof parseCommentEvents>[0];
 
 export async function processInstagramWebhook({ payload: incoming, provider, workspaceId }: {
   payload: InstagramPayload; provider: InstagramProvider; workspaceId?: string;
-}) {
+}, options?: { runInline?: (job: InlineDmJob) => Promise<void> }) {
   if (incoming.object !== 'instagram' || !Array.isArray(incoming.entry)) return;
   const accounts = await prisma.instagramAccount.findMany({
     where: { instagramId: { in: incoming.entry.map(e => e.id) }, provider, ...(workspaceId ? { workspaceId } : {}) },
@@ -34,13 +56,12 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
     const commentEvents = parseCommentEvents(
       payload as Parameters<typeof parseCommentEvents>[0]
     );
-    const queue = getDMQueue();
 
     for (const event of commentEvents) {
       const account = accountMap.get(event.instagramAccountId);
       if (!account) continue;
 
-      await queue.add(
+      await handoff(
         "process-comment",
         {
           instagramAccountId: event.instagramAccountId,
@@ -55,7 +76,8 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
         },
         {
           jobId: `comment_${event.instagramAccountId}_${event.commentId}`,
-        }
+        },
+        options?.runInline,
       );
 
       if (account) {
@@ -72,7 +94,7 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
     );
 
     for (const event of postbackEvents) {
-      await queue.add(
+      await handoff(
         POSTBACK_JOB_NAME,
         {
           instagramAccountId: event.instagramAccountId,
@@ -87,7 +109,8 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
           jobId: `postback_${event.instagramAccountId}_${event.userId}_${(
             event.mid ?? event.payload
           ).replace(/:/g, "_")}`,
-        }
+        },
+        options?.runInline,
       );
     }
 
@@ -100,7 +123,7 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
       const account = accountMap.get(event.instagramAccountId);
       if (!account) continue;
 
-      await queue.add(
+      await handoff(
         MESSAGE_JOB_NAME,
         {
           instagramAccountId: event.instagramAccountId,
@@ -117,7 +140,8 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
           jobId: `message_${event.instagramAccountId}_${Buffer.from(
             event.messageId
           ).toString("base64url")}`,
-        }
+        },
+        options?.runInline,
       );
 
       if (account) {
@@ -163,7 +187,7 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
         if (scheduledAutomationIds.has(automation.id)) continue;
         scheduledAutomationIds.add(automation.id);
 
-        await queue.add(
+        await handoff(
           POSTBACK_JOB_NAME,
           {
             instagramAccountId: event.instagramAccountId,
@@ -175,7 +199,8 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
           {
             delay: OPENING_DM_READ_FALLBACK_DELAY_MS,
             jobId: `read_fallback_${event.instagramAccountId}_${event.userId}_${automation.id}`,
-          }
+          },
+          options?.runInline,
         );
       }
     }

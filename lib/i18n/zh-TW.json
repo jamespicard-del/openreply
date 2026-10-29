@@ -244,6 +244,7 @@
   "Private replies successfully sent.": "成功傳送的私訊。",
   "Production Diagnostics": "正式環境診斷",
   "Public reply under the post": "在貼文下公開回覆",
+  "QStash, no always-on worker": "QStash，不需常駐背景處理器",
   "Queue": "佇列",
   "Range": "範圍",
   "Rate limited": "頻率限制",

@@ -6,9 +6,8 @@ import {
 } from "@/lib/instagram/delivery-errors";
 import { claimCommentDelivery, MAX_COMMENT_SEND_ATTEMPTS } from "./comment-delivery";
 import { createHash } from "node:crypto";
-import { UnrecoverableError, Worker, type Job } from "bullmq";
+import { UnrecoverableError, Worker } from "bullmq";
 import {
-  getDMQueue,
   getRedisConnection,
   MESSAGE_JOB_NAME,
   POSTBACK_JOB_NAME,
@@ -19,6 +18,15 @@ import {
   type ProcessPostbackJob,
   type ProcessFollowUpJob,
 } from "./client";
+import { DM_JOB_BACKOFF_MS } from "./backoff";
+import { enqueueDmJob } from "./enqueue";
+
+export type RunnableDmJob<T = DmQueueJob> = {
+  id?: string;
+  name: string;
+  data: T;
+  attemptsMade: number;
+};
 import { prisma } from "@/lib/db/client";
 import {
   MetaApiError,
@@ -55,7 +63,7 @@ import { hashRecipientId } from "@/lib/tracking/server";
 
 import { ZernioApiError } from "@/lib/zernio/client";
 
-const BACKOFF_DELAYS = [5 * 60 * 1000, 15 * 60 * 1000, 45 * 60 * 1000];
+const BACKOFF_DELAYS = DM_JOB_BACKOFF_MS;
 
 // How long to wait before re-checking a follow that came back false: one
 // delay per re-check, each counted from the previous check.
@@ -276,7 +284,7 @@ function connectionScope(data: DmQueueJob) {
   return data.accountConnectionId ? { instagramAccountId: data.accountConnectionId } : {};
 }
 
-async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
+async function processComment(job: RunnableDmJob<ProcessCommentJob>): Promise<void> {
   const {
     instagramAccountId,
     commentId,
@@ -608,7 +616,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           },
         });
 
-        await getDMQueue().add(
+        await enqueueDmJob(
           "process-comment",
           {
             ...job.data,
@@ -885,7 +893,7 @@ async function sendFollowRecheckAck({
  * The postback payload is `reveal:<automationId>`; the sender is the user's
  * IGSID (same id as their comment author id), which we DM directly.
  */
-async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
+async function processPostback(job: RunnableDmJob<ProcessPostbackJob>): Promise<void> {
   const { instagramAccountId, userId, payload, fallback } = job.data;
 
   const isFollowCheck = payload.startsWith("followcheck:");
@@ -1004,7 +1012,7 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
         if (rechecksDone < FOLLOW_RECHECK_DELAYS_MS.length) {
           const delay = FOLLOW_RECHECK_DELAYS_MS[rechecksDone];
           const window = Math.floor(Date.now() / delay);
-          await getDMQueue().add(
+          await enqueueDmJob(
             POSTBACK_JOB_NAME,
             {
               ...job.data,
@@ -1131,7 +1139,7 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
     if (automation.followUpEnabled && automation.followUpMessage?.trim()) {
       const delayMs =
         Math.max(0, automation.followUpDelayMinutes ?? 0) * 60_000;
-      await getDMQueue().add(
+      await enqueueDmJob(
         FOLLOWUP_JOB_NAME,
         {
           instagramAccountId: automation.instagramAccount.instagramId,
@@ -1222,7 +1230,7 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
  * Best-effort: if the message can't be delivered (e.g. the 24-hour messaging
  * window closed because the delay was long), it is logged, not retried forever.
  */
-async function processFollowUp(job: Job<ProcessFollowUpJob>): Promise<void> {
+async function processFollowUp(job: RunnableDmJob<ProcessFollowUpJob>): Promise<void> {
   const { instagramAccountId, userId, automationId, commenterName } = job.data;
 
   const automation = await prisma.automation.findFirst({
@@ -1276,7 +1284,7 @@ async function processFollowUp(job: Job<ProcessFollowUpJob>): Promise<void> {
  * comments) and delivers the reveal directly, honouring the follow gate.
  * Dedup is per inbound message id, so each message triggers at most one reply.
  */
-async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
+async function processMessage(job: RunnableDmJob<ProcessMessageJob>): Promise<void> {
   const { instagramAccountId, messageId, messageText, senderId } = job.data;
 
   const automations = await prisma.automation.findMany({
@@ -1465,7 +1473,7 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
         // here exactly as it does after a button tap. Not scheduled behind the
         // follow prompt — no link went out yet in that branch.
         if (automation.followUpEnabled && automation.followUpMessage?.trim()) {
-          await getDMQueue().add(
+          await enqueueDmJob(
             FOLLOWUP_JOB_NAME,
             {
               instagramAccountId: automation.instagramAccount.instagramId,
@@ -1533,20 +1541,20 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
   }
 }
 
-async function dispatchJob(job: Job<DmQueueJob>): Promise<void> {
+async function dispatchJob(job: RunnableDmJob): Promise<void> {
   if (job.name === POSTBACK_JOB_NAME) {
-    return processPostback(job as Job<ProcessPostbackJob>);
+    return processPostback(job as RunnableDmJob<ProcessPostbackJob>);
   }
   if (job.name === FOLLOWUP_JOB_NAME) {
-    return processFollowUp(job as Job<ProcessFollowUpJob>);
+    return processFollowUp(job as RunnableDmJob<ProcessFollowUpJob>);
   }
   if (job.name === MESSAGE_JOB_NAME) {
-    return processMessage(job as Job<ProcessMessageJob>);
+    return processMessage(job as RunnableDmJob<ProcessMessageJob>);
   }
-  return processComment(job as Job<ProcessCommentJob>);
+  return processComment(job as RunnableDmJob<ProcessCommentJob>);
 }
 
-async function processJob(job: Job<DmQueueJob>): Promise<void> {
+async function processJob(job: RunnableDmJob): Promise<void> {
   try {
     await dispatchJob(job);
   } catch (error) {
@@ -1560,7 +1568,7 @@ async function processJob(job: Job<DmQueueJob>): Promise<void> {
 }
 
 async function recordWorkerFailure(
-  job: Job<DmQueueJob> | undefined,
+  job: RunnableDmJob | undefined,
   error: Error
 ) {
   try {
@@ -1604,8 +1612,18 @@ async function recordWorkerFailure(
   }
 }
 
+export async function executeDmJob(job: RunnableDmJob): Promise<void> {
+  try {
+    await processJob(job);
+  } catch (error) {
+    const asError = error instanceof Error ? error : new Error(formatError(error));
+    await recordWorkerFailure(job, asError);
+    throw error;
+  }
+}
+
 export function createDMWorker(): Worker<DmQueueJob> {
-  const worker = new Worker<DmQueueJob>("dm-processing", processJob, {
+  const worker = new Worker<DmQueueJob>("dm-processing", (job) => processJob(job), {
     connection: getRedisConnection(),
     concurrency: 5,
     // Seconds, not milliseconds (BullMQ 5.76.4). When the queue is empty the
