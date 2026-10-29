@@ -122,8 +122,9 @@ vi.mock("@/lib/queue/client", () => ({
 }));
 
 vi.mock("bullmq", () => {
-  function MockWorker(_name: string, processor: unknown) {
+  function MockWorker(_name: string, processor: unknown, opts?: unknown) {
     (global as Record<string, unknown>).__dmWorkerProcessor = processor;
+    (global as Record<string, unknown>).__dmWorkerOptions = opts;
     return {
       on: vi.fn(),
       close: vi.fn(),
@@ -196,6 +197,16 @@ function getProcessor(): (job: {
     attemptsMade: number;
   }) => Promise<void>;
 }
+
+it("long-polls an empty queue without giving up immediate pickup", () => {
+  createDMWorker();
+  expect((global as Record<string, unknown>).__dmWorkerOptions).toMatchObject({
+    concurrency: 5,
+    // Seconds. BullMQ blocks on the marker; a new job still wakes BZPOPMIN.
+    drainDelay: 300,
+    stalledInterval: 300_000,
+  });
+});
 
 function createMockJob(data: Record<string, unknown> = mockJobData) {
   return {

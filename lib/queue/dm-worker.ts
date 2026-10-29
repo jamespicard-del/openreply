@@ -1626,6 +1626,15 @@ export function createDMWorker(): Worker<DmQueueJob> {
   const worker = new Worker<DmQueueJob>("dm-processing", (job) => processJob(job), {
     connection: getRedisConnection(),
     concurrency: 5,
+    // Seconds, not milliseconds (BullMQ 5.76.4). When the queue is empty the
+    // worker blocks in BZPOPMIN on the queue marker for this long. Queue.add
+    // writes that marker, so a new job still unblocks the pop immediately.
+    // The 10s ceiling in getBlockTimeout applies only while a delayed job is
+    // pending; it does not delay a job that is ready now.
+    drainDelay: 300,
+    // Milliseconds. How often crashed in-flight jobs are scanned. Lock renewal
+    // for a live job is unchanged, and this does not gate pickup of new jobs.
+    stalledInterval: 300_000,
     settings: {
       backoffStrategy: (attemptsMade: number) =>
         BACKOFF_DELAYS[Math.min(attemptsMade - 1, BACKOFF_DELAYS.length - 1)],

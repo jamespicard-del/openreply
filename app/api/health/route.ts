@@ -126,6 +126,8 @@ export async function GET() {
     })),
   ]);
 
+  // worker.healthy is getWorkerHealth(): age within WORKER_HEARTBEAT_TTL_SECONDS
+  // (180). The heartbeat is every 60s, so one missed beat still reports healthy.
   const healthy =
     database.status === "ok" &&
     redis.status === "ok" &&

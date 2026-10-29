@@ -2,7 +2,11 @@ import { getRedisConnection } from "@/lib/queue/client";
 
 const WORKER_HEALTH_KEY = "health:worker:dm";
 const WORKER_ALERTS_KEY = "alerts:worker:dm";
-const WORKER_HEARTBEAT_TTL_SECONDS = 120;
+// 3× the 60s heartbeat in worker/dm-worker.ts. The Redis key and
+// getWorkerHealth() share this window, and /api/health uses that result with
+// no separate age cutoff. One missed beat (age ~120s) stays healthy; the key
+// and the healthy flag both lapse after 180s.
+export const WORKER_HEARTBEAT_TTL_SECONDS = 180;
 
 export interface WorkerHeartbeat {
   status: "running";

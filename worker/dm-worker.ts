@@ -16,7 +16,9 @@ if (getQueueBackend() === "qstash") {
 } else {
   const worker = createDMWorker();
   const startedAt = new Date().toISOString();
-  const HEARTBEAT_INTERVAL_MS = 30_000;
+  // Must stay below WORKER_HEARTBEAT_TTL_SECONDS (180) in lib/ops/worker-health.ts.
+  // That window is what /api/health reads, so one missed 60s beat stays healthy.
+  const HEARTBEAT_INTERVAL_MS = 60_000;
   // Polling safety net for comments that webhooks miss. Runs in the worker because
   // it must fire every few minutes and Vercel's free crons only run once a day.
   const POLL_INTERVAL_MS = Number(
