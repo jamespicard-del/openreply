@@ -6,8 +6,8 @@ import os from "node:os";
 
 const worker = createDMWorker();
 const startedAt = new Date().toISOString();
-// Must stay below WORKER_HEARTBEAT_TTL_SECONDS (120) in lib/ops/worker-health.ts.
-// /api/health uses that same window, so a beat every 60s still reads healthy.
+// Must stay below WORKER_HEARTBEAT_TTL_SECONDS (180) in lib/ops/worker-health.ts.
+// That window is what /api/health reads, so one missed 60s beat stays healthy.
 const HEARTBEAT_INTERVAL_MS = 60_000;
 // Polling safety net for comments that webhooks miss. Runs in the worker because
 // it must fire every few minutes and Vercel's free crons only run once a day.
